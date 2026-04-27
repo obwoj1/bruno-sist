@@ -20,6 +20,22 @@ export default function Home() {
   const [language, setLanguage] = useState<string>("");
   const recorderRef = useRef<MediaRecorder | null>(null);
 
+  // Simple session management (localStorage)
+  type Session = {
+    id: string;
+    name: string;
+    createdAt: number;
+    updatedAt: number;
+    transcript: string;
+    summary: string;
+    prompt: string;
+    language: string;
+  };
+
+  const [sessionId, setSessionId] = useState<string>("");
+  const [sessionName, setSessionName] = useState<string>("");
+  const [sessions, setSessions] = useState<Session[]>([]);
+
   useEffect(() => {
     // Feature-detect supported mime types (Safari often prefers mp4)
     const candidates = [
@@ -35,6 +51,72 @@ export default function Home() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    // Load saved sessions list
+    try {
+      const raw = typeof window !== "undefined" ? localStorage.getItem("bruno-sist:sessions") : null;
+      if (raw) setSessions(JSON.parse(raw));
+    } catch {}
+  }, []);
+
+  function persistSessions(next: Session[]) {
+    setSessions(next);
+    try {
+      localStorage.setItem("bruno-sist:sessions", JSON.stringify(next));
+    } catch {}
+  }
+
+  function newId() {
+    return (
+      Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+    ).toUpperCase();
+  }
+
+  function newSession() {
+    setSessionId("");
+    setSessionName("");
+    setPrompt("");
+    setLanguage("");
+    setTranscript("");
+    setSummary("");
+    setError(null);
+    setStatus("idle");
+  }
+
+  function saveSession() {
+    const id = sessionId || newId();
+    const now = Date.now();
+    const name = sessionName || `Session ${new Date(now).toLocaleString()}`;
+    const payload: Session = {
+      id,
+      name,
+      createdAt: sessionId ? sessions.find(s => s.id === sessionId)?.createdAt ?? now : now,
+      updatedAt: now,
+      transcript,
+      summary,
+      prompt,
+      language,
+    };
+    const others = sessions.filter(s => s.id !== id);
+    const next = [payload, ...others].sort((a, b) => b.updatedAt - a.updatedAt);
+    setSessionId(id);
+    setSessionName(name);
+    persistSessions(next);
+  }
+
+  function loadSession(id: string) {
+    const s = sessions.find((x) => x.id === id);
+    if (!s) return;
+    setSessionId(s.id);
+    setSessionName(s.name);
+    setPrompt(s.prompt);
+    setLanguage(s.language);
+    setTranscript(s.transcript);
+    setSummary(s.summary);
+    setError(null);
+    setStatus(s.transcript ? "ready" : "idle");
+  }
 
   function reset() {
     setChunks([]);
@@ -176,6 +258,26 @@ export default function Home() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  function exportMarkdown() {
+    const header = `# ${sessionName || "Untitled Session"}`;
+    const meta = `\n\n> Prompt: ${prompt || "(none)"}\n> Language: ${language || "(auto)"}`;
+    const body = `\n\n## Summary\n\n${summary || "(No summary yet)"}\n\n## Transcript\n\n${transcript || "(No transcript yet)"}`;
+    download(`${sessionName || "session"}.md`, `${header}${meta}${body}`);
+  }
+
+  function exportJSON() {
+    const data = {
+      id: sessionId || null,
+      name: sessionName || "Untitled Session",
+      prompt,
+      language,
+      transcript,
+      summary,
+      exportedAt: new Date().toISOString(),
+    };
+    download(`${sessionName || "session"}.json`, JSON.stringify(data, null, 2));
+  }
+
   return (
     <div className="min-h-screen w-full bg-zinc-50 text-zinc-900 dark:bg-black dark:text-zinc-100">
       <main className="mx-auto max-w-3xl px-6 py-10">
@@ -183,6 +285,68 @@ export default function Home() {
         <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
           Record or upload lecture audio. Transcribe, summarize, and listen back.
         </p>
+
+        <section className="mt-6 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="flex-1">
+              <label className="block text-sm font-medium">Session name</label>
+              <input
+                value={sessionName}
+                onChange={(e) => setSessionName(e.target.value)}
+                placeholder="e.g., COSC 354 – Lecture 5"
+                className="mt-1 w-full rounded-md border border-zinc-300 bg-white p-2 text-sm outline-none focus:border-zinc-400 dark:border-zinc-700 dark:bg-zinc-950"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={saveSession}
+                className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-black dark:hover:bg-zinc-200"
+              >
+                Save
+              </button>
+              <button
+                onClick={newSession}
+                className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                New Session
+              </button>
+            </div>
+          </div>
+
+          {sessions.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <label className="text-sm text-zinc-600 dark:text-zinc-400">Load:</label>
+              <select
+                className="rounded-md border border-zinc-300 bg-white p-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
+                onChange={(e) => e.target.value && loadSession(e.target.value)}
+                value=""
+              >
+                <option value="" disabled>
+                  Select a saved session
+                </option>
+                {sessions.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} · {new Date(s.updatedAt).toLocaleString()}
+                  </option>
+                ))}
+              </select>
+              <div className="ml-auto flex gap-2">
+                <button
+                  onClick={exportMarkdown}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  Export .md
+                </button>
+                <button
+                  onClick={exportJSON}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  Export .json
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
 
         <section className="mt-8 space-y-4">
           <label className="block text-sm font-medium">Context Prompt (optional)</label>
@@ -299,6 +463,13 @@ export default function Home() {
                   className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm disabled:opacity-50 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
                 >
                   Download
+                </button>
+                <button
+                  disabled={!transcript}
+                  onClick={() => speak(transcript)}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm disabled:opacity-50 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  Speak
                 </button>
               </div>
             </div>
