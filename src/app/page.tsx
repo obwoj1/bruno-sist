@@ -16,9 +16,20 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string>("");
   const [summary, setSummary] = useState<string>("");
+  const [diarized, setDiarized] = useState<string>("");
   const [prompt, setPrompt] = useState<string>("");
   const [language, setLanguage] = useState<string>("");
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const [useSegmented, setUseSegmented] = useState<boolean>(true);
+  const [segments, setSegments] = useState<{
+    start: number; // seconds
+    end: number;   // seconds
+    text: string;
+  }[]>([]);
+
+  // Timeslice for MediaRecorder; used for approximate timestamps
+  const timesliceMs = 1000; // 1s chunks
+  const segmentGroupSeconds = 15; // group ~15s per transcription request
 
   // Simple session management (localStorage)
   type Session = {
@@ -122,6 +133,7 @@ export default function Home() {
     setChunks([]);
     setTranscript("");
     setSummary("");
+    setDiarized("");
     setError(null);
     setStatus("idle");
   }
@@ -139,7 +151,7 @@ export default function Home() {
         stream.getTracks().forEach((t) => t.stop());
       };
       recorderRef.current = rec;
-      rec.start(1000);
+      rec.start(timesliceMs);
     } catch (e: any) {
       setError(e?.message || "Unable to access microphone");
     }
@@ -196,7 +208,13 @@ export default function Home() {
 
   async function handleStopAndTranscribe() {
     await stopRecording();
-    if (audioBlob) await transcribe(audioBlob);
+    if (audioBlob) {
+      if (useSegmented) {
+        await transcribeSegmented(chunks as BlobPart[]);
+      } else {
+        await transcribe(audioBlob);
+      }
+    }
   }
 
   async function handleUploadFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -220,6 +238,47 @@ export default function Home() {
     }
   }
 
+  // Uploads smaller grouped chunks to the server, builds transcript and rough timestamps
+  async function transcribeSegmented(allChunks: BlobPart[]) {
+    setError(null);
+    setSegments([]);
+    setTranscript("");
+    const groupCount = Math.max(1, Math.round((segmentGroupSeconds * 1000) / timesliceMs));
+    try {
+      let combinedText: string[] = [];
+      const grouped: { start: number; end: number; text: string }[] = [];
+      for (let i = 0; i < allChunks.length; i += groupCount) {
+        const slice = allChunks.slice(i, i + groupCount);
+        if (!slice.length) continue;
+        const blob = new Blob(slice, { type: mediaType });
+        const startSec = (i * timesliceMs) / 1000;
+        const endSec = Math.min(((i + slice.length) * timesliceMs) / 1000, ((allChunks.length) * timesliceMs) / 1000);
+        const fd = new FormData();
+        const ext = mediaType.includes("mp4")
+          ? "m4a"
+          : mediaType.includes("mpeg")
+          ? "mp3"
+          : "webm";
+        fd.append("file", new File([blob], `segment-${i / groupCount | 0}.${ext}`, { type: blob.type }));
+        if (prompt && i === 0) fd.append("prompt", prompt);
+        if (language) fd.append("language", language);
+
+        const res = await fetch("/api/transcribe", { method: "POST", body: fd });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        const text = (data?.text || "").trim();
+        combinedText.push(text);
+        grouped.push({ start: startSec, end: endSec, text });
+        setTranscript(combinedText.join("\n\n"));
+        setSegments([...grouped]);
+      }
+      setStatus("ready");
+    } catch (e: any) {
+      setError(e?.message || "Segmented transcription failed");
+      setStatus("idle");
+    }
+  }
+
   async function summarize() {
     if (!transcript) return;
     setError(null);
@@ -234,6 +293,23 @@ export default function Home() {
       setSummary(data.summary || "");
     } catch (e: any) {
       setError(e?.message || "Summarization failed");
+    }
+  }
+
+  async function diarize() {
+    if (!transcript) return;
+    setError(null);
+    try {
+      const res = await fetch("/api/diarize", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ transcript }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setDiarized(data.diarized || "");
+    } catch (e: any) {
+      setError(e?.message || "Diarization failed");
     }
   }
 
@@ -276,6 +352,43 @@ export default function Home() {
       exportedAt: new Date().toISOString(),
     };
     download(`${sessionName || "session"}.json`, JSON.stringify(data, null, 2));
+  }
+
+  function formatTimestampSRT(sec: number) {
+    const ms = Math.max(0, Math.round(sec * 1000));
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    const ms3 = ms % 1000;
+    const pad = (n: number, l = 2) => String(n).padStart(l, "0");
+    return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms3, 3)}`;
+  }
+
+  function formatTimestampVTT(sec: number) {
+    const ms = Math.max(0, Math.round(sec * 1000));
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    const ms3 = ms % 1000;
+    const pad = (n: number, l = 2) => String(n).padStart(l, "0");
+    return `${pad(h)}:${pad(m)}:${pad(s)}.${pad(ms3, 3)}`;
+  }
+
+  function exportSRT() {
+    const caps = (segments?.length ? segments : [{ start: 0, end: Math.max(1, (chunks.length * timesliceMs)/1000), text: transcript }]).filter(s => s.text?.trim());
+    const body = caps
+      .map((s, idx) => `${idx + 1}\n${formatTimestampSRT(s.start)} --> ${formatTimestampSRT(s.end)}\n${s.text}\n`)
+      .join("\n");
+    download(`${sessionName || "session"}.srt`, body);
+  }
+
+  function exportVTT() {
+    const caps = (segments?.length ? segments : [{ start: 0, end: Math.max(1, (chunks.length * timesliceMs)/1000), text: transcript }]).filter(s => s.text?.trim());
+    const body = `WEBVTT\n\n` +
+      caps
+        .map((s) => `${formatTimestampVTT(s.start)} --> ${formatTimestampVTT(s.end)}\n${s.text}\n`)
+        .join("\n");
+    download(`${sessionName || "session"}.vtt`, body);
   }
 
   return (
@@ -369,6 +482,20 @@ export default function Home() {
               />
             </div>
             <div>
+              <label className="block text-sm font-medium">Segmented transcription</label>
+              <div className="mt-2 flex items-center gap-2 text-sm">
+                <input
+                  id="segmented"
+                  type="checkbox"
+                  checked={useSegmented}
+                  onChange={(e) => setUseSegmented(e.target.checked)}
+                />
+                <label htmlFor="segmented" className="select-none">
+                  Upload audio in ~{segmentGroupSeconds}s chunks (better accuracy, timestamps)
+                </label>
+              </div>
+            </div>
+            <div className="sm:col-span-2">
               <label className="block text-sm font-medium">Upload audio</label>
               <input
                 type="file"
@@ -471,6 +598,20 @@ export default function Home() {
                 >
                   Speak
                 </button>
+                <button
+                  disabled={!transcript}
+                  onClick={exportSRT}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm disabled:opacity-50 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  Export .srt
+                </button>
+                <button
+                  disabled={!transcript}
+                  onClick={exportVTT}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm disabled:opacity-50 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  Export .vtt
+                </button>
               </div>
             </div>
             <div className="mt-3 min-h-[160px] whitespace-pre-wrap rounded-md border border-dashed border-zinc-300 p-3 text-sm dark:border-zinc-700">
@@ -490,6 +631,13 @@ export default function Home() {
                   Summarize
                 </button>
                 <button
+                  disabled={!transcript}
+                  onClick={diarize}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm disabled:opacity-50 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  Diarize
+                </button>
+                <button
                   disabled={!summary}
                   onClick={() => speak(summary)}
                   className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm disabled:opacity-50 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
@@ -507,6 +655,31 @@ export default function Home() {
             </div>
           </div>
         </section>
+
+        {diarized && (
+          <section className="mt-6 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-medium">Diarized</h2>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => navigator.clipboard.writeText(diarized)}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={() => download(`${sessionName || "session"}-diarized.md`, diarized)}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  Download
+                </button>
+              </div>
+            </div>
+            <div className="prose prose-zinc dark:prose-invert mt-3 min-h-[120px] rounded-md border border-dashed border-zinc-300 p-3 text-sm dark:border-zinc-700">
+              <article dangerouslySetInnerHTML={{ __html: markedToHtml(diarized) }} />
+            </div>
+          </section>
+        )}
 
         {error && (
           <p className="mt-6 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
