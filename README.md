@@ -24,5 +24,15 @@ Environment
 - Optional: `OPENAI_TRANSCRIPTION_MODEL` (default: gpt-4o-mini-transcribe)
 - Optional: `OPENAI_SUMMARY_MODEL` (default: gpt-4o-mini)
 
+Testing & CI
+- Run tests: `npm test` (Vitest)
+- Typecheck: `npm run typecheck`
+- Lint: `npm run lint`
+- GitHub Actions CI runs on pushes and PRs to `main` (build, lint, typecheck, test)
+
+Deploying
+- Recommended: Vercel. Connect the GitHub repo, add `OPENAI_API_KEY` in Project Settings → Environment Variables, then deploy.
+- Build command: `npm run build`. Framework preset: Next.js. No extra config required.
+
 Repo
 - https://github.com/obwoj1/bruno-sist
