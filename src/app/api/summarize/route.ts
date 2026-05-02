@@ -29,6 +29,12 @@ export async function POST(req: Request) {
     const model = process.env.OPENAI_SUMMARY_MODEL || "gpt-4o-mini";
     const openai = new OpenAI({ apiKey });
 
+    // Guard very large transcripts (approximate character cap)
+    const MAX_CHARS = 200_000; // ~100-150k tokens across models; keeps request reliable
+    const clipped = transcript.length > MAX_CHARS
+      ? transcript.slice(0, MAX_CHARS) + "\n\n[...clipped due to length...]"
+      : transcript;
+
     const system = [
       "You are an expert note-taker for university lectures.",
       "Produce concise notes with:",
@@ -41,7 +47,7 @@ export async function POST(req: Request) {
     const user = [
       prompt ? `Context: ${prompt}` : "",
       "Transcript:",
-      transcript,
+      clipped,
       "Output format (markdown):",
       "# Summary\n<summary>\n\n# Key Points\n- <point>\n\n# Action Items\n- <action or 'None'>",
     ]

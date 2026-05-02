@@ -20,6 +20,8 @@ export default function Home() {
   const [prompt, setPrompt] = useState<string>("");
   const [language, setLanguage] = useState<string>("");
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [useSegmented, setUseSegmented] = useState<boolean>(true);
   const [segments, setSegments] = useState<{
     start: number; // seconds
@@ -136,6 +138,10 @@ export default function Home() {
     setDiarized("");
     setError(null);
     setStatus("idle");
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      setAudioUrl(null);
+    }
   }
 
   async function startRecording() {
@@ -182,6 +188,18 @@ export default function Home() {
     return new Blob(chunks, { type: mediaType });
   }, [chunks, mediaType]);
 
+  useEffect(() => {
+    // Maintain a single object URL for the current audioBlob
+    if (!audioBlob) return;
+    const url = URL.createObjectURL(audioBlob);
+    setAudioUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return url;
+    });
+    return () => URL.revokeObjectURL(url);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioBlob]);
+
   async function transcribe(blob: Blob) {
     setError(null);
     try {
@@ -223,6 +241,11 @@ export default function Home() {
     if (!file) return;
     setStatus("processing");
     try {
+      // Preview
+      setAudioUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return URL.createObjectURL(file);
+      });
       const fd = new FormData();
       fd.append("file", file);
       if (prompt) fd.append("prompt", prompt);
@@ -235,6 +258,16 @@ export default function Home() {
     } catch (e: any) {
       setError(e?.message || "Upload failed");
       setStatus("idle");
+    }
+  }
+
+  function onAudioLoadedMetadata() {
+    const el = audioRef.current;
+    if (!el) return;
+    if (!segments.length && transcript) {
+      // If we have a transcript but no segments (e.g., uploaded full file), create a single segment
+      const dur = isFinite(el.duration) && el.duration > 0 ? el.duration : Math.max(1, (chunks.length * timesliceMs) / 1000);
+      setSegments([{ start: 0, end: dur, text: transcript }]);
     }
   }
 
@@ -503,6 +536,21 @@ export default function Home() {
                 onChange={handleUploadFile}
                 className="block w-full cursor-pointer text-sm file:mr-4 file:rounded-md file:border-0 file:bg-zinc-900 file:px-3 file:py-2 file:text-white hover:file:bg-zinc-800 dark:file:bg-zinc-100 dark:file:text-black dark:hover:file:bg-zinc-200"
               />
+              <div
+                className="mt-2 rounded-md border border-dashed border-zinc-300 p-4 text-center text-sm text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const f = e.dataTransfer.files?.[0];
+                  if (!f) return;
+                  const input = { target: { files: [f] } } as unknown as React.ChangeEvent<HTMLInputElement>;
+                  handleUploadFile(input);
+                }}
+              >
+                Or drag and drop a file here
+              </div>
             </div>
           </div>
         </section>
@@ -565,10 +613,33 @@ export default function Home() {
             )}
           </div>
 
-          {audioBlob && (
-            <audio controls className="mt-4 w-full">
-              <source src={URL.createObjectURL(audioBlob)} type={mediaType} />
-            </audio>
+          {(audioUrl || audioBlob) && (
+            <>
+              <audio ref={audioRef} onLoadedMetadata={onAudioLoadedMetadata} controls className="mt-4 w-full" src={audioUrl || undefined}>
+                {audioUrl ? null : audioBlob ? (
+                  <source src={URL.createObjectURL(audioBlob)} type={mediaType} />
+                ) : null}
+              </audio>
+              {segments.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  {segments.map((s, i) => (
+                    <button
+                      key={`${s.start}-${i}`}
+                      onClick={() => {
+                        if (audioRef.current) {
+                          audioRef.current.currentTime = s.start;
+                          audioRef.current.play();
+                        }
+                      }}
+                      className="rounded border border-zinc-300 px-2 py-1 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                      aria-label={`Play segment ${i + 1} starting at ${Math.round(s.start)} seconds`}
+                    >
+                      ▶ {formatTime(s.start)}–{formatTime(s.end)}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </section>
 
@@ -682,32 +753,23 @@ export default function Home() {
         )}
 
         {error && (
-          <p className="mt-6 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
-            {String(error)}
-          </p>
+          <div className="mt-6 flex items-center justify-between rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
+            <p className="pr-3">{String(error)}</p>
+            {String(error).includes("Missing OPENAI_API_KEY") && (
+              <a href="/setup" className="rounded-md border border-red-300 px-3 py-1.5 text-sm hover:bg-red-100 dark:hover:bg-red-900/40">Go to Setup</a>
+            )}
+          </div>
         )}
       </main>
     </div>
   );
 }
 
-// Very small markdown-to-HTML helper for basic formatting (no external deps)
-function markedToHtml(md: string) {
-  // Extremely minimal: headers and bullet points to HTML
-  const esc = (s: string) =>
-    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const lines = md.split(/\r?\n/);
-  const out: string[] = [];
-  for (const ln of lines) {
-    if (/^#\s+/.test(ln)) out.push(`<h2>${esc(ln.replace(/^#\s+/, ""))}</h2>`);
-    else if (/^##\s+/.test(ln)) out.push(`<h3>${esc(ln.replace(/^##\s+/, ""))}</h3>`);
-    else if (/^\-\s+/.test(ln)) out.push(`<li>${esc(ln.replace(/^\-\s+/, ""))}</li>`);
-    else if (!ln.trim()) out.push("");
-    else out.push(`<p>${esc(ln)}</p>`);
-  }
-  // Wrap any <li> blocks with <ul>
-  const html = out
-    .join("\n")
-    .replace(/(?:^|\n)(<li>.*?<\/li>)(?=\n|$)/gs, (m) => `<ul>\n${m}\n</ul>`);
-  return html;
+import { markedToHtml } from "../lib/markdown";
+
+function formatTime(sec: number) {
+  const s = Math.max(0, Math.floor(sec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
 }

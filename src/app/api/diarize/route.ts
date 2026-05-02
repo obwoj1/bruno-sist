@@ -28,13 +28,19 @@ export async function POST(req: Request) {
     const model = process.env.OPENAI_SUMMARY_MODEL || "gpt-4o-mini";
     const openai = new OpenAI({ apiKey });
 
+    // Guard length to avoid huge payloads
+    const MAX_CHARS = 150_000;
+    const clipped = transcript.length > MAX_CHARS
+      ? transcript.slice(0, MAX_CHARS) + "\n\n[...clipped due to length...]"
+      : transcript;
+
     const system = [
       "You annotate lecture transcripts with approximate speaker labels.",
       "Assign speakers as Speaker 1, Speaker 2, etc. Merge obvious continuations.",
       "Do not invent content; keep text intact other than adding labels and paragraphing.",
     ].join(" ");
 
-    const user = `Transcript (raw):\n\n${transcript}\n\nOutput format (markdown):\n\n# Diarized Transcript\n\nSpeaker 1: <text>\n\nSpeaker 2: <text>\n...`;
+    const user = `Transcript (raw):\n\n${clipped}\n\nOutput format (markdown):\n\n# Diarized Transcript\n\nSpeaker 1: <text>\n\nSpeaker 2: <text>\n...`;
 
     const completion = await openai.chat.completions.create({
       model,

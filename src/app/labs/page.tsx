@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { markedToHtml } from "@/lib/markdown";
 
 type Session = {
   id: string;

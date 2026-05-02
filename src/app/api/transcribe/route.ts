@@ -25,6 +25,21 @@ export async function POST(req: Request) {
       );
     }
 
+    const MAX_SIZE = 30 * 1024 * 1024; // 30 MB
+    const type = (file as File).type || "";
+    if (!type.startsWith("audio/") && !type.startsWith("video/")) {
+      return new Response(
+        JSON.stringify({ error: `Unsupported media type: ${type || "unknown"}` }),
+        { status: 415, headers: { "content-type": "application/json" } }
+      );
+    }
+    if ((file as File).size > MAX_SIZE) {
+      return new Response(
+        JSON.stringify({ error: `File too large. Limit is ${Math.round(MAX_SIZE/1024/1024)}MB` }),
+        { status: 413, headers: { "content-type": "application/json" } }
+      );
+    }
+
     const openai = new OpenAI({ apiKey });
     const model =
       process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
