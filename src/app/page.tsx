@@ -28,6 +28,7 @@ export default function Home() {
     end: number;   // seconds
     text: string;
   }[]>([]);
+  const [recorderSupported, setRecorderSupported] = useState<boolean>(true);
 
   // Timeslice for MediaRecorder; used for approximate timestamps
   const timesliceMs = 1000; // 1s chunks
@@ -57,10 +58,15 @@ export default function Home() {
       "audio/mp4",
       "audio/mpeg",
     ];
-    for (const c of candidates) {
-      if ((window as any).MediaRecorder && MediaRecorder.isTypeSupported(c)) {
-        setMediaType(c);
-        break;
+    const hasMR = typeof window !== "undefined" && (window as any).MediaRecorder;
+    setRecorderSupported(Boolean(hasMR));
+    if (hasMR) {
+      for (const c of candidates) {
+        // @ts-ignore -- runtime check
+        if (MediaRecorder.isTypeSupported(c)) {
+          setMediaType(c);
+          break;
+        }
       }
     }
   }, []);
@@ -558,7 +564,10 @@ export default function Home() {
         <section className="mt-8 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
           <h2 className="text-lg font-medium">Recorder</h2>
           <div className="mt-3 flex flex-wrap gap-2">
-            {status === "idle" && (
+            {!recorderSupported && (
+              <span className="text-sm text-amber-700 dark:text-amber-300">Recording is not supported in this browser. Please upload an audio file instead.</span>
+            )}
+            {status === "idle" && recorderSupported && (
               <button
                 onClick={startRecording}
                 className="rounded-md bg-zinc-900 px-4 py-2 text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-black dark:hover:bg-zinc-200"
@@ -566,7 +575,7 @@ export default function Home() {
                 Start Recording
               </button>
             )}
-            {status === "recording" && (
+            {status === "recording" && recorderSupported && (
               <>
                 <button
                   onClick={pauseRecording}
@@ -582,7 +591,7 @@ export default function Home() {
                 </button>
               </>
             )}
-            {status === "paused" && (
+            {status === "paused" && recorderSupported && (
               <>
                 <button
                   onClick={resumeRecording}

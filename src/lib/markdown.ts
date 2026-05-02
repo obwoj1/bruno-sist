@@ -14,6 +14,6 @@ export function markedToHtml(md: string) {
   // Wrap isolated <li> sequences with <ul>
   const html = out
     .join("\n")
-    .replace(/(?:^|\n)((?:<li>.*?<\/li>\n?)+)(?=\n|$)/gs, (m, grp) => `<ul>\n${grp}\n</ul>`);
+    .replace(/(?:^|\n)((?:<li>[\s\S]*?<\/li>\n?)+)(?=\n|$)/g, (m, grp) => `<ul>\n${grp}\n</ul>`);
   return html;
 }
